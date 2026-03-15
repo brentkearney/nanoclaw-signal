@@ -249,18 +249,10 @@ class EchoCache {
 // Signal envelope types (from signal-cli SSE)
 // ---------------------------------------------------------------------------
 
-interface SignalQuote {
-  id?: number;
-  authorNumber?: string;
-  authorUuid?: string;
-  text?: string;
-}
-
 interface SignalDataMessage {
   timestamp?: number;
   message?: string;
   groupInfo?: { groupId?: string; groupName?: string; type?: string };
-  quote?: SignalQuote;
   attachments?: Array<{
     id?: string;
     contentType?: string;
@@ -359,16 +351,6 @@ export class SignalChannel implements Channel {
       logger.debug('Signal: could not set profile name');
     }
 
-    // Enable typing indicators so recipients see "composing" status
-    try {
-      await signalRpc(this.baseUrl, 'updateConfiguration', {
-        typingIndicators: true,
-        account: this.account,
-      });
-    } catch {
-      logger.debug('Signal: could not enable typing indicators');
-    }
-
     // Start SSE event loop
     this.connected = true;
     this.sseAbort = new AbortController();
@@ -411,15 +393,8 @@ export class SignalChannel implements Channel {
 
     for (const chunk of chunks) {
       try {
-        const { text: plainText, textStyles } = parseSignalStyles(chunk);
-        const params: Record<string, unknown> = { message: plainText };
+        const params: Record<string, unknown> = { message: chunk };
         if (this.account) params.account = this.account;
-        // signal-cli JSON-RPC uses "textStyle" (singular) with string format "start:length:STYLE"
-        if (textStyles.length > 0) {
-          params.textStyle = textStyles.map(
-            (s) => `${s.start}:${s.length}:${s.style}`,
-          );
-        }
 
         if (target.startsWith('group:')) {
           params.groupId = target.slice('group:'.length);
@@ -427,19 +402,7 @@ export class SignalChannel implements Channel {
           params.recipient = [target];
         }
 
-        try {
-          await signalRpc(this.baseUrl, 'send', params);
-        } catch (styledErr) {
-          // Older signal-cli may not support textStyle — retry with original markup
-          if (textStyles.length > 0) {
-            logger.debug('Signal: textStyle rejected, retrying with markup');
-            delete params.textStyle;
-            params.message = chunk;
-            await signalRpc(this.baseUrl, 'send', params);
-          } else {
-            throw styledErr;
-          }
-        }
+        await signalRpc(this.baseUrl, 'send', params);
       } catch (err) {
         logger.error({ jid, err }, 'Signal: send failed');
       }
@@ -628,16 +591,6 @@ export class SignalChannel implements Channel {
 
         if (!syncContent) return;
 
-        // Prepend quote context so the agent sees what's being replied to
-        if (syncSent.quote) {
-          const q = syncSent.quote;
-          const quoteAuthor = q.authorNumber ?? 'someone';
-          const quoteText = q.text ?? '';
-          if (quoteText) {
-            syncContent = `> ${quoteAuthor}: ${quoteText}\n\n${syncContent}`;
-          }
-        }
-
         this.opts.onMessage(chatJid, {
           id: String(syncSent.timestamp ?? Date.now()),
           chat_jid: chatJid,
@@ -721,16 +674,6 @@ export class SignalChannel implements Channel {
 
     if (!content) return;
 
-    // Prepend quote context so the agent sees what's being replied to
-    if (dataMessage.quote) {
-      const q = dataMessage.quote;
-      const quoteAuthor = q.authorNumber ?? 'someone';
-      const quoteText = q.text ?? '';
-      if (quoteText) {
-        content = `> ${quoteAuthor}: ${quoteText}\n\n${content}`;
-      }
-    }
-
     // Trigger detection for groups
     if (isGroup && !TRIGGER_PATTERN.test(content)) {
       const nameRegex = new RegExp(`\\b${escapeRegex(ASSISTANT_NAME)}\\b`, 'i');
@@ -779,75 +722,6 @@ function escapeRegex(str: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// ---------------------------------------------------------------------------
-// Signal text styles — convert Markdown to Signal's offset-based formatting
-// ---------------------------------------------------------------------------
-
-interface SignalTextStyle {
-  style: 'BOLD' | 'ITALIC' | 'STRIKETHROUGH' | 'MONOSPACE' | 'SPOILER';
-  start: number;
-  length: number;
-}
-
-interface StyledText {
-  text: string;
-  textStyles: SignalTextStyle[];
-}
-
-/**
- * Parse Markdown-style formatting into Signal's native text styles.
- * Returns plain text (markup stripped) and an array of style ranges.
- * Offsets are in UTF-16 code units (JavaScript string indices).
- */
-function parseSignalStyles(input: string): StyledText {
-  const styles: SignalTextStyle[] = [];
-
-  // Process code blocks first (``` ... ```) to prevent inner markup parsing
-  // Then inline patterns: **bold**, *bold*, _italic_, ~~strike~~, `mono`
-  const patterns: Array<{
-    regex: RegExp;
-    style: SignalTextStyle['style'];
-  }> = [
-    { regex: /```([\s\S]*?)```/g, style: 'MONOSPACE' },
-    { regex: /`([^`]+)`/g, style: 'MONOSPACE' },
-    { regex: /\*\*(.+?)\*\*/g, style: 'BOLD' },
-    { regex: /\*(.+?)\*/g, style: 'BOLD' },
-    { regex: /_(.+?)_/g, style: 'ITALIC' },
-    { regex: /~~(.+?)~~/g, style: 'STRIKETHROUGH' },
-  ];
-
-  let text = input;
-
-  for (const { regex, style } of patterns) {
-    const nextText: string[] = [];
-    let lastIndex = 0;
-    let offset = 0;
-
-    for (const match of text.matchAll(regex)) {
-      const fullMatch = match[0];
-      const innerText = match[1];
-      const matchStart = match.index!;
-
-      // Copy text before this match
-      nextText.push(text.slice(lastIndex, matchStart));
-      const plainStart = matchStart - offset;
-
-      // Add the inner text (without markup)
-      nextText.push(innerText);
-      styles.push({ style, start: plainStart, length: innerText.length });
-
-      const stripped = fullMatch.length - innerText.length;
-      offset += stripped;
-      lastIndex = matchStart + fullMatch.length;
-    }
-
-    nextText.push(text.slice(lastIndex));
-    text = nextText.join('');
-  }
-
-  return { text, textStyles: styles };
 }
 
 function computeBackoff(attempt: number): number {
