@@ -1,0 +1,19 @@
+skill: add-signal-image-vision
+version: 1.1.0
+description: "Add image vision to NanoClaw agents via Signal image attachments"
+core_version: 1.2.21
+adds:
+  - src/image.ts
+  - src/image.test.ts
+modifies:
+  - src/channels/signal.ts
+  - src/container-runner.ts
+  - src/index.ts
+  - container/agent-runner/src/index.ts
+structured:
+  npm_dependencies:
+    sharp: "^0.34.5"
+  env_additions: []
+conflicts: []
+depends: [add-signal]
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-signal-image-vision/tests/image-vision.test.ts"
