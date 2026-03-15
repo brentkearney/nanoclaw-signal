@@ -79,7 +79,11 @@ Link to an existing Signal account. Messages are exchanged via Note to Self:
 
 ```bash
 signal-cli link -n "NanoClaw"
-# Scan the QR code with your Signal app: Settings → Linked Devices
+# This prints a sgnl:// URI. Convert it to a QR code to scan:
+# Option 1: Use qrencode (install with apt/brew)
+#   signal-cli link -n "NanoClaw" 2>&1 | head -1 | xargs qrencode -t UTF8
+# Option 2: Paste the URI into an online QR generator
+# Then scan with Signal: Settings → Linked Devices → Link New Device
 ```
 
 ## Configure NanoClaw
@@ -113,13 +117,21 @@ After the service starts, register the chat where messages should be delivered:
 npx tsx setup/index.ts --step register -- \
   --jid "signal:<sender-uuid-or-phone>" \
   --name "YourName" \
-  --folder main
+  --trigger "@YourAssistantName" \
+  --folder main \
+  --channel signal \
+  --is-main \
+  --no-trigger-required
 
 # For Note to Self — the JID is the assistant's own account
 npx tsx setup/index.ts --step register -- \
   --jid "signal:+1YOURNUMBER" \
   --name "Me" \
-  --folder main
+  --trigger "@YourAssistantName" \
+  --folder main \
+  --channel signal \
+  --is-main \
+  --no-trigger-required
 ```
 
 **Note:** signal-cli v0.14.x identifies senders by UUID instead of phone number. The first time someone messages the assistant, their JID appears in the logs as `signal:<uuid>`. Use that UUID when registering the chat.
