@@ -1,0 +1,16 @@
+skill: add-signal-pdf-reader
+version: 1.1.0
+description: "Add PDF reading capability to container agents via Signal attachments"
+core_version: 1.2.21
+adds:
+  - container/skills/pdf-reader/SKILL.md
+  - container/skills/pdf-reader/pdf-reader
+modifies:
+  - container/Dockerfile
+  - src/channels/signal.ts
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends: [add-signal]
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-signal-pdf-reader/tests/pdf-reader.test.ts"
