@@ -392,7 +392,7 @@ export class SignalChannel implements Channel {
         const { text: plainText, textStyles } = parseSignalStyles(chunk);
         const params: Record<string, unknown> = { message: plainText };
         if (this.account) params.account = this.account;
-        if (textStyles.length > 0) params.textStyle = textStyles;
+        if (textStyles.length > 0) params.textStyles = textStyles;
 
         if (target.startsWith('group:')) {
           params.groupId = target.slice('group:'.length);
@@ -403,10 +403,10 @@ export class SignalChannel implements Channel {
         try {
           await signalRpc(this.baseUrl, 'send', params);
         } catch (styledErr) {
-          // Older signal-cli may not support textStyle — retry without
+          // Older signal-cli may not support textStyles — retry with original markup
           if (textStyles.length > 0) {
-            logger.debug('Signal: textStyle rejected, retrying plain');
-            delete params.textStyle;
+            logger.debug('Signal: textStyles rejected, retrying with markup');
+            delete params.textStyles;
             params.message = chunk;
             await signalRpc(this.baseUrl, 'send', params);
           } else {

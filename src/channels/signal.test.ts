@@ -805,7 +805,7 @@ describe('SignalChannel', () => {
       expect(rpcCall).toBeDefined();
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Hello world');
-      expect(body.params.textStyle).toEqual([
+      expect(body.params.textStyles).toEqual([
         { style: 'BOLD', start: 6, length: 5 },
       ]);
 
@@ -824,7 +824,7 @@ describe('SignalChannel', () => {
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Run npm test now');
-      expect(body.params.textStyle).toEqual([
+      expect(body.params.textStyles).toEqual([
         { style: 'MONOSPACE', start: 4, length: 8 },
       ]);
 
@@ -843,7 +843,7 @@ describe('SignalChannel', () => {
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('No formatting here');
-      expect(body.params.textStyle).toBeUndefined();
+      expect(body.params.textStyles).toBeUndefined();
 
       await channel.disconnect();
     });
@@ -863,7 +863,7 @@ describe('SignalChannel', () => {
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Bold and italic');
-      expect(body.params.textStyle).toEqual(
+      expect(body.params.textStyles).toEqual(
         expect.arrayContaining([
           { style: 'BOLD', start: 0, length: 4 },
           { style: 'ITALIC', start: 9, length: 6 },
