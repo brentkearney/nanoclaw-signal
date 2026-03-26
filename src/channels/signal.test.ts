@@ -872,6 +872,130 @@ describe('SignalChannel', () => {
 
       await channel.disconnect();
     });
+
+    it('uses the exact parameter name "textStyles" (plural) for signal-cli', async () => {
+      const channel = createChannel();
+      await channel.connect();
+      mockFetch.mockClear();
+
+      await channel.sendMessage('signal:+15555550123', 'Hello **world**');
+
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
+      );
+      const body = JSON.parse(rpcCall![1]?.body as string);
+
+      // Must be "textStyles" (plural) — signal-cli rejects "textStyle" (singular)
+      expect(body.params).toHaveProperty('textStyles');
+      expect(body.params).not.toHaveProperty('textStyle');
+
+      await channel.disconnect();
+    });
+
+    it('falls back to original markup when textStyles is rejected', async () => {
+      const channel = createChannel();
+      await channel.connect();
+      mockFetch.mockClear();
+
+      // First RPC call (with textStyles) fails, second (fallback) succeeds
+      let callCount = 0;
+      mockFetch.mockImplementation(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const url =
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.toString()
+                : (input as Request).url;
+
+          if (url.includes('/api/v1/rpc')) {
+            callCount++;
+            const body = JSON.parse(init?.body as string);
+            if (body.method === 'send' && callCount === 1) {
+              // Reject the first send (with textStyles)
+              return new Response(
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: body.id,
+                  error: { message: 'Unknown parameter: textStyles' },
+                }),
+                {
+                  status: 200,
+                  headers: { 'Content-Type': 'application/json' },
+                },
+              );
+            }
+            // Second send (fallback) succeeds
+            return new Response(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: { ok: true },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+
+          if (url.includes('/api/v1/check')) {
+            return new Response('OK', { status: 200 });
+          }
+
+          return new Response('Not Found', { status: 404 });
+        },
+      );
+
+      await channel.sendMessage('signal:+15555550123', 'Hello **world**');
+
+      // Should have made 2 RPC calls: styled (failed) + fallback
+      const rpcCalls = mockFetch.mock.calls.filter((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
+      );
+      expect(rpcCalls.length).toBe(2);
+
+      // Fallback should send original text WITH markup, not stripped
+      const fallbackBody = JSON.parse(rpcCalls[1][1]?.body as string);
+      expect(fallbackBody.params.message).toBe('Hello **world**');
+      expect(fallbackBody.params.textStyles).toBeUndefined();
+
+      // Restore default mock
+      mockFetch.mockImplementation(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const url =
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.toString()
+                : (input as Request).url;
+          if (url.includes('/api/v1/check'))
+            return new Response('OK', { status: 200 });
+          if (url.includes('/api/v1/rpc')) {
+            const body = JSON.parse(init?.body as string);
+            return new Response(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: body.id,
+                result: { ok: true },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (url.includes('/api/v1/events')) {
+            const stream = new ReadableStream<Uint8Array>({
+              start(controller) {
+                fetchRef.sseController = controller;
+              },
+            });
+            return new Response(stream, {
+              status: 200,
+              headers: { 'Content-Type': 'text/event-stream' },
+            });
+          }
+          return new Response('Not Found', { status: 404 });
+        },
+      );
+
+      await channel.disconnect();
+    });
   });
 
   // --- Channel properties ---
