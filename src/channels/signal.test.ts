@@ -792,22 +792,21 @@ describe('SignalChannel', () => {
   // --- Text styles ---
 
   describe('text styles', () => {
-    it('sends bold text with textStyle parameter', async () => {
+    it('sends bold text with textStyle parameter in string format', async () => {
       const channel = createChannel();
       await channel.connect();
       mockFetch.mockClear();
 
       await channel.sendMessage('signal:+15555550123', 'Hello **world**');
 
-      const rpcCall = mockFetch.mock.calls.find(
-        (c) => (c[0] as string).includes('/api/v1/rpc'),
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
       );
       expect(rpcCall).toBeDefined();
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Hello world');
-      expect(body.params.textStyles).toEqual([
-        { style: 'BOLD', start: 6, length: 5 },
-      ]);
+      // signal-cli JSON-RPC uses "textStyle" (singular) with "start:length:STYLE" strings
+      expect(body.params.textStyle).toEqual(['6:5:BOLD']);
 
       await channel.disconnect();
     });
@@ -819,14 +818,12 @@ describe('SignalChannel', () => {
 
       await channel.sendMessage('signal:+15555550123', 'Run `npm test` now');
 
-      const rpcCall = mockFetch.mock.calls.find(
-        (c) => (c[0] as string).includes('/api/v1/rpc'),
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Run npm test now');
-      expect(body.params.textStyles).toEqual([
-        { style: 'MONOSPACE', start: 4, length: 8 },
-      ]);
+      expect(body.params.textStyle).toEqual(['4:8:MONOSPACE']);
 
       await channel.disconnect();
     });
@@ -838,12 +835,12 @@ describe('SignalChannel', () => {
 
       await channel.sendMessage('signal:+15555550123', 'No formatting here');
 
-      const rpcCall = mockFetch.mock.calls.find(
-        (c) => (c[0] as string).includes('/api/v1/rpc'),
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('No formatting here');
-      expect(body.params.textStyles).toBeUndefined();
+      expect(body.params.textStyle).toBeUndefined();
 
       await channel.disconnect();
     });
@@ -858,22 +855,19 @@ describe('SignalChannel', () => {
         '**Bold** and _italic_',
       );
 
-      const rpcCall = mockFetch.mock.calls.find(
-        (c) => (c[0] as string).includes('/api/v1/rpc'),
+      const rpcCall = mockFetch.mock.calls.find((c) =>
+        (c[0] as string).includes('/api/v1/rpc'),
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
       expect(body.params.message).toBe('Bold and italic');
-      expect(body.params.textStyles).toEqual(
-        expect.arrayContaining([
-          { style: 'BOLD', start: 0, length: 4 },
-          { style: 'ITALIC', start: 9, length: 6 },
-        ]),
+      expect(body.params.textStyle).toEqual(
+        expect.arrayContaining(['0:4:BOLD', '9:6:ITALIC']),
       );
 
       await channel.disconnect();
     });
 
-    it('uses the exact parameter name "textStyles" (plural) for signal-cli', async () => {
+    it('uses "textStyle" (singular) parameter name with string format', async () => {
       const channel = createChannel();
       await channel.connect();
       mockFetch.mockClear();
@@ -885,19 +879,21 @@ describe('SignalChannel', () => {
       );
       const body = JSON.parse(rpcCall![1]?.body as string);
 
-      // Must be "textStyles" (plural) — signal-cli rejects "textStyle" (singular)
-      expect(body.params).toHaveProperty('textStyles');
-      expect(body.params).not.toHaveProperty('textStyle');
+      // signal-cli JSON-RPC uses "textStyle" (singular), not "textStyles"
+      expect(body.params).toHaveProperty('textStyle');
+      expect(body.params).not.toHaveProperty('textStyles');
+      // Format is "start:length:STYLE" strings, not JSON objects
+      expect(body.params.textStyle[0]).toMatch(/^\d+:\d+:\w+$/);
 
       await channel.disconnect();
     });
 
-    it('falls back to original markup when textStyles is rejected', async () => {
+    it('falls back to original markup when textStyle is rejected', async () => {
       const channel = createChannel();
       await channel.connect();
       mockFetch.mockClear();
 
-      // First RPC call (with textStyles) fails, second (fallback) succeeds
+      // First RPC call (with textStyle) fails, second (fallback) succeeds
       let callCount = 0;
       mockFetch.mockImplementation(
         async (input: string | URL | Request, init?: RequestInit) => {
@@ -917,7 +913,7 @@ describe('SignalChannel', () => {
                 JSON.stringify({
                   jsonrpc: '2.0',
                   id: body.id,
-                  error: { message: 'Unknown parameter: textStyles' },
+                  error: { message: 'Unknown parameter: textStyle' },
                 }),
                 {
                   status: 200,
@@ -955,7 +951,7 @@ describe('SignalChannel', () => {
       // Fallback should send original text WITH markup, not stripped
       const fallbackBody = JSON.parse(rpcCalls[1][1]?.body as string);
       expect(fallbackBody.params.message).toBe('Hello **world**');
-      expect(fallbackBody.params.textStyles).toBeUndefined();
+      expect(fallbackBody.params.textStyle).toBeUndefined();
 
       // Restore default mock
       mockFetch.mockImplementation(
