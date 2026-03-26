@@ -679,6 +679,116 @@ describe('SignalChannel', () => {
     });
   });
 
+  // --- Quote context ---
+
+  describe('quote context', () => {
+    it('prepends quoted message context to inbound messages', async () => {
+      const opts = createTestOpts();
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000000,
+          message: 'I disagree',
+          quote: {
+            id: 1699999999000,
+            authorNumber: '+15555550888',
+            text: 'Pineapple belongs on pizza',
+          },
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'signal:+15555550123',
+        expect.objectContaining({
+          content: '> +15555550888: Pineapple belongs on pizza\n\nI disagree',
+        }),
+      );
+
+      await channel.disconnect();
+    });
+
+    it('delivers message without quote prefix when no quote present', async () => {
+      const opts = createTestOpts();
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000000,
+          message: 'Just a regular message',
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'signal:+15555550123',
+        expect.objectContaining({
+          content: 'Just a regular message',
+        }),
+      );
+
+      await channel.disconnect();
+    });
+
+    it('skips quote prefix when quote has no text', async () => {
+      const opts = createTestOpts();
+      const channel = new SignalChannel(
+        'signal-cli',
+        '+15551234567',
+        '127.0.0.1',
+        7583,
+        opts,
+        false,
+      );
+      await channel.connect();
+
+      pushSseEvent({
+        sourceNumber: '+15555550123',
+        sourceName: 'Alice',
+        dataMessage: {
+          timestamp: 1700000000000,
+          message: 'Replying to an image',
+          quote: {
+            id: 1699999999000,
+            authorNumber: '+15555550888',
+            text: '',
+          },
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'signal:+15555550123',
+        expect.objectContaining({
+          content: 'Replying to an image',
+        }),
+      );
+
+      await channel.disconnect();
+    });
+  });
+
   // --- Channel properties ---
 
   describe('channel properties', () => {
