@@ -927,7 +927,8 @@ export function createSignalAdapter(config: {
   }
 
   async function waitForDaemon(): Promise<boolean> {
-    const maxWait = 30_000;
+    // JVM startup on ARM hosts can exceed 30 seconds even with valid credentials.
+    const maxWait = 120_000;
     const pollInterval = 1000;
     const start = Date.now();
 

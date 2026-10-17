@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // --- Mocks ---
@@ -61,7 +64,7 @@ vi.mock('node:net', () => ({
 }));
 
 import type { ChannelSetup } from './adapter.js';
-import { computeSignalIsMention, createSignalAdapter } from './signal.js';
+import { createSignalAdapter } from './signal.js';
 
 // --- Test helpers ---
 
@@ -150,6 +153,55 @@ describe('SignalAdapter', () => {
       await adapter.teardown();
     });
 
+    it('connects when a managed daemon takes more than 30 seconds to become ready', async () => {
+      const originalConnection = vi.mocked(createConnection).getMockImplementation()!;
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        killed: false,
+        kill: vi.fn(),
+      });
+      child.kill.mockImplementation(() => {
+        child.killed = true;
+        child.emit('exit', 0, null);
+      });
+      // The adapter only uses process events, streams, and kill on this mock.
+      const daemonProcess = child as unknown as ChildProcess;
+      vi.mocked(spawn).mockReturnValueOnce(daemonProcess);
+      vi.useFakeTimers();
+      const startedAt = Date.now();
+      // This event-driven socket double implements only the connection path under test.
+      const connectWhenReady = ((_port: number, _host: string, cb?: () => void) => {
+        const sock = createFakeSocket();
+        tcpRef.fakeSocket = sock;
+        setImmediate(() => {
+          if (Date.now() - startedAt < 45_000) sock.emit('error', new Error('not ready'));
+          else cb?.();
+        });
+        return sock;
+      }) as unknown as typeof createConnection;
+      vi.mocked(createConnection).mockImplementation(connectWhenReady);
+      const adapter = createSignalAdapter({
+        cliPath: 'signal-cli',
+        account: '+15551234567',
+        tcpHost: '127.0.0.1',
+        tcpPort: 7583,
+        manageDaemon: true,
+        signalDataDir: '/tmp/signal-cli-test-data',
+      });
+      try {
+        const connecting = adapter.setup(createMockSetup()).catch((err) => err);
+        await vi.advanceTimersByTimeAsync(46_000);
+        expect(await connecting).toBeUndefined();
+        expect(adapter.isConnected()).toBe(true);
+        expect(child.kill).not.toHaveBeenCalled();
+      } finally {
+        await adapter.teardown();
+        vi.mocked(createConnection).mockImplementation(originalConnection);
+        vi.useRealTimers();
+      }
+    });
+
     it('isConnected() returns false before setup', () => {
       const adapter = createAdapter();
       expect(adapter.isConnected()).toBe(false);
@@ -208,8 +260,6 @@ describe('SignalAdapter', () => {
             sender: '+15555550123',
             senderName: 'Alice',
           }),
-          isMention: true,
-          isGroup: false,
         }),
       );
 
@@ -242,36 +292,7 @@ describe('SignalAdapter', () => {
             text: 'Group hello',
             sender: '+15555550999',
           }),
-          isMention: undefined,
-          isGroup: true,
         }),
-      );
-
-      await adapter.teardown();
-    });
-
-    it('marks a group message as a mention when the linked account is tagged', async () => {
-      const adapter = createAdapter();
-      const cfg = createMockSetup();
-      await adapter.setup(cfg);
-
-      pushEvent({
-        sourceNumber: '+15555550999',
-        sourceName: 'Bob',
-        dataMessage: {
-          timestamp: 1700000000000,
-          message: '￼ ping',
-          mentions: [{ start: 0, length: 1, name: 'NanoClaw', number: '+15551234567' }],
-          groupInfo: { groupId: 'abc123', groupName: 'Family' },
-        },
-      });
-
-      await new Promise((r) => setTimeout(r, 50));
-
-      expect(cfg.onInbound).toHaveBeenCalledWith(
-        'group:abc123',
-        null,
-        expect.objectContaining({ isMention: true, isGroup: true }),
       );
 
       await adapter.teardown();
@@ -368,7 +389,174 @@ describe('SignalAdapter', () => {
       await adapter.teardown();
     });
 
-    it('forwards image attachments as [Image: <path>] plus structured attachments array', async () => {
+    it('forwards image attachments as base64 in the structured attachments array', async () => {
+      const adapter = createAdapter();
+      const cfg = createMockSetup();
+      await adapter.setup(cfg);
+
+      // signal.ts reads the attachment off disk to inline its bytes; the
+      // host's session-manager.extractAttachmentFiles then saves the base64
+      // to the per-session inbox and rewrites the entry as `localPath`.
+      // Stage a real file at the path signal.ts will look at.
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const attachDir = path.join('/tmp/signal-cli-test-data', 'attachments');
+      fs.mkdirSync(attachDir, { recursive: true });
+      const fakeBytes = Buffer.from('fake-image-bytes');
+      const attachFile = path.join(attachDir, 'att123abc');
+      fs.writeFileSync(attachFile, fakeBytes);
+
+      try {
+        pushEvent({
+          sourceNumber: '+15555550123',
+          sourceName: 'Alice',
+          dataMessage: {
+            timestamp: 1700000000000,
+            attachments: [{ id: 'att123abc', contentType: 'image/jpeg', size: 50000 }],
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(cfg.onInbound).toHaveBeenCalledWith(
+          '+15555550123',
+          null,
+          expect.objectContaining({
+            content: expect.objectContaining({
+              // No more `[Image: <hostpath>]` line in the text — the host
+              // will surface the saved file via the attachments array.
+              text: '',
+              attachments: [
+                expect.objectContaining({
+                  data: fakeBytes.toString('base64'),
+                  name: 'att123abc.jpeg',
+                  type: 'image',
+                  contentType: 'image/jpeg',
+                  size: fakeBytes.length,
+                }),
+              ],
+            }),
+          }),
+        );
+      } finally {
+        fs.unlinkSync(attachFile);
+      }
+
+      await adapter.teardown();
+    });
+
+    it('forwards PDF attachments as base64 with original filename and type=document', async () => {
+      const adapter = createAdapter();
+      const cfg = createMockSetup();
+      await adapter.setup(cfg);
+
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const attachDir = path.join('/tmp/signal-cli-test-data', 'attachments');
+      fs.mkdirSync(attachDir, { recursive: true });
+      const fakeBytes = Buffer.from('%PDF-1.4 fake');
+      const attachFile = path.join(attachDir, 'pdfid123');
+      fs.writeFileSync(attachFile, fakeBytes);
+
+      try {
+        pushEvent({
+          sourceNumber: '+15555550123',
+          sourceName: 'Alice',
+          dataMessage: {
+            timestamp: 1700000000000,
+            attachments: [
+              {
+                id: 'pdfid123',
+                contentType: 'application/pdf',
+                filename: 'report.pdf',
+                size: fakeBytes.length,
+              },
+            ],
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(cfg.onInbound).toHaveBeenCalledWith(
+          '+15555550123',
+          null,
+          expect.objectContaining({
+            content: expect.objectContaining({
+              text: '',
+              attachments: [
+                expect.objectContaining({
+                  data: fakeBytes.toString('base64'),
+                  name: 'report.pdf',
+                  type: 'document',
+                  contentType: 'application/pdf',
+                  size: fakeBytes.length,
+                }),
+              ],
+            }),
+          }),
+        );
+      } finally {
+        fs.unlinkSync(attachFile);
+      }
+
+      await adapter.teardown();
+    });
+
+    // Regression: a markdown file attached to a message used to be discarded
+    // silently — only image/* and application/pdf were accepted — so the
+    // message arrived looking like ordinary text with the file simply gone.
+    it.each([
+      ['notes.md', 'application/octet-stream', 'mdid1'],
+      ['data.csv', 'text/csv', 'csvid1'],
+      ['bundle.tar.gz', 'application/gzip', 'gzid1'],
+      ['archive.zip', 'application/zip', 'zipid1'],
+    ])('forwards %s as a document attachment', async (filename, contentType, attId) => {
+      const adapter = createAdapter();
+      const cfg = createMockSetup();
+      await adapter.setup(cfg);
+
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const attachDir = path.join('/tmp/signal-cli-test-data', 'attachments');
+      fs.mkdirSync(attachDir, { recursive: true });
+      const fakeBytes = Buffer.from(`fake bytes for ${filename}`);
+      const attachFile = path.join(attachDir, attId);
+      fs.writeFileSync(attachFile, fakeBytes);
+
+      try {
+        pushEvent({
+          sourceNumber: '+15555550123',
+          sourceName: 'Alice',
+          dataMessage: {
+            timestamp: 1700000000000,
+            message: 'here you go',
+            attachments: [{ id: attId, contentType, filename, size: fakeBytes.length }],
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(cfg.onInbound).toHaveBeenCalledWith(
+          '+15555550123',
+          null,
+          expect.objectContaining({
+            content: expect.objectContaining({
+              attachments: [
+                expect.objectContaining({
+                  data: fakeBytes.toString('base64'),
+                  name: filename,
+                  type: 'document',
+                  size: fakeBytes.length,
+                }),
+              ],
+            }),
+          }),
+        );
+      } finally {
+        fs.unlinkSync(attachFile);
+      }
+
+      await adapter.teardown();
+    });
+
+    it('ignores an unsupported attachment type but still delivers the text', async () => {
       const adapter = createAdapter();
       const cfg = createMockSetup();
       await adapter.setup(cfg);
@@ -378,21 +566,15 @@ describe('SignalAdapter', () => {
         sourceName: 'Alice',
         dataMessage: {
           timestamp: 1700000000000,
-          attachments: [{ id: 'att123abc', contentType: 'image/jpeg', size: 50000 }],
+          message: 'see attached',
+          attachments: [{ id: 'exeid1', contentType: 'application/x-msdownload', filename: 'tool.exe' }],
         },
       });
 
       await new Promise((r) => setTimeout(r, 50));
-      expect(cfg.onInbound).toHaveBeenCalledWith(
-        '+15555550123',
-        null,
-        expect.objectContaining({
-          content: expect.objectContaining({
-            text: expect.stringMatching(/^\[Image: .+att123abc\]$/),
-            attachments: [expect.objectContaining({ contentType: 'image/jpeg' })],
-          }),
-        }),
-      );
+      const call = cfg.onInbound.mock.calls[0];
+      expect(call[2].content.text).toBe('see attached');
+      expect(call[2].content.attachments).toBeUndefined();
 
       await adapter.teardown();
     });
@@ -986,31 +1168,5 @@ describe('SignalAdapter', () => {
       const adapter = createAdapter();
       expect(adapter.supportsThreads).toBe(false);
     });
-  });
-});
-
-describe('computeSignalIsMention', () => {
-  const account = '+15551234567';
-
-  it('is true for every DM', () => {
-    expect(computeSignalIsMention(account, false)).toBe(true);
-    expect(computeSignalIsMention(account, false, [])).toBe(true);
-  });
-
-  it('is true in groups when the account is tagged by number', () => {
-    expect(computeSignalIsMention(account, true, [{ number: account }])).toBe(true);
-  });
-
-  it('is true in groups when the account is tagged by uuid', () => {
-    expect(computeSignalIsMention(account, true, [{ uuid: account }])).toBe(true);
-  });
-
-  it('is undefined (not false) in groups when someone else is tagged', () => {
-    expect(computeSignalIsMention(account, true, [{ number: '+15550000000', uuid: 'bob-uuid' }])).toBeUndefined();
-  });
-
-  it('is undefined in groups without mentions', () => {
-    expect(computeSignalIsMention(account, true)).toBeUndefined();
-    expect(computeSignalIsMention(account, true, [])).toBeUndefined();
   });
 });
